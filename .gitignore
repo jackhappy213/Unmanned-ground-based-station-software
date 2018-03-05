@@ -1,52 +1,541 @@
-# Prerequisites
-*.d
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using GMap.NET;
+using GMap.NET.MapProviders;
+using GMap.NET.WindowsForms;
+using GMap.NET.WindowsForms.Markers;
+using GMap.NET.Analytics;
+using GMap.NET.CacheProviders;
+using GMap.NET.Internals;
+using GMap.NET.ObjectModel;
+using GMap.NET.Projections;
+using GMap.NET.Properties;
+using GMap.NET.WindowsForms.ToolTips;
+using System.IO.Ports;
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+using DirectShowLib;
+using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 
-# Linker output
-*.ilk
-*.map
-*.exp
+#if !USING_NET11
+using System.Runtime.InteropServices.ComTypes;
+#endif
 
-# Precompiled Headers
-*.gch
-*.pch
+//关于gomap控件的图层，如何将每次点击的航点连线，我还没有解决，望师弟师妹们解决，谢谢——程啟忠
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
+namespace Maserati
+{
+    //29.5627910366515,106.4698523283   重大
+    //29.5377872256237,106.60667181015  重邮
+    public partial class Form1 : Form
+    {
+        public GMapOverlay routes; //声明图层上的route,mark
+        public GMapOverlay MyMark;    
+        public GMapMarker MyShop;         
+        public GMapMarker Center;
+        public PointLatLng lastPosition;
+        int i=0;
+        enum PlayState
+        {
+            Stopped,
+            Paused,
+            Running,
+            Init
+        };
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+        // Application-defined message to notify app of filtergraph events
+        public const int WM_GRAPHNOTIFY = 0x8000 + 1;
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+        IVideoWindow videoWindow = null;    //初始化，定义清空
+        IMediaControl mediaControl = null;
+        IMediaEventEx mediaEventEx = null;
+        IGraphBuilder graphBuilder = null;
+        ICaptureGraphBuilder2 captureGraphBuilder = null;
+        PlayState currentState = PlayState.Stopped;
 
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
+        DsROTEntry rot = null;
 
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
+        public Form1()//系统的初始化
+        {
+            InitializeComponent();  //系统的初始化一些属性，可转定义
+            CaptureVideo();         //在form1下先调用摄像头，预览画面
+            System.Windows.Forms.Control.CheckForIllegalCrossThreadCalls = false;
+        }
+        private void gMapControl1_Load(object sender, EventArgs e)//gmap插件，设置基本的操作
+        {
+            GMap.NET.GMaps.Instance.Mode = GMap.NET.AccessMode.ServerAndCache;
+            this.gMapControl1.BackColor = Color.Red;  
+            this.gMapControl1.Manager.Mode = AccessMode.ServerAndCache;//设置控件的管理模式             
+            this.gMapControl1.MapProvider = GMapProviders.GoogleChinaMap;//设置控件显示的地图来源                
+            this.gMapControl1.Position = new PointLatLng(29.5351268817094, 106.606543064117);//设置控件显示的当前中心位置       
+            this.gMapControl1.MaxZoom = 18;//设置控件最大的缩放比例                
+            this.gMapControl1.MinZoom = 3;//设置控件最小的缩放比例                
+            this.gMapControl1.Zoom = 16;//设置控件当前的缩放比例  
+            //创建一个新图层  
+            routes = new GMapOverlay(this.gMapControl1, "routes");  
+             MyMark = new GMapOverlay(this.gMapControl1, "MyMark");  
+            routes.IsVisibile = true;//可以显示  
+            MyMark.IsVisibile = true;  
+            this.gMapControl1.Overlays.Add(routes);//添加到图层列表中  
+             this.gMapControl1.Overlays.Add(MyMark);           
+            GMapMarker gMapMarker = new GMapMarkerGoogleRed(this.gMapControl1.Position);//创建一个图标,添加图层routes中     
+            gMapMarker.ToolTipText = "home";  
+             this.MyMark.Markers.Add(gMapMarker);           
+            this.gMapControl1.MouseMove += new MouseEventHandler(gMapControl1_MouseMove);
+            this.gMapControl1.MouseDoubleClick += new MouseEventHandler(gMapControl1_MouseDoubleClick);
+            gMapControl1.OnMarkerClick += new MarkerClick(gMapControl1_OnMarkerClick);
+        }
+        private void gMapControl1_MouseMove(object sender, MouseEventArgs e)//鼠标移动至该位置，显示经纬度
+        {
+            PointLatLng latLng = this.gMapControl1.FromLocalToLatLng(e.X, e.Y);
+            this.label1.Text = string.Format("纬度：{0}"+"\n"+"经度：{1} ",latLng.Lat ,latLng.Lng );
+            this.label1.BackColor = Color.Transparent;//label1的透明度，我一直没改过来，不会改，望后面的师弟师妹改
+        }
+        void gMapControl1_OnMarkerClick(GMapMarker item, MouseEventArgs e)  //保留鼠标左键单击，后面可能要用
+        {
+
+        }
+        void gMapControl1_MouseDoubleClick(object sender, MouseEventArgs e)//鼠标双击，在图层上添加一个标签mark依次后推，并在textbox中显示
+        {
+            if (e.Button == System.Windows.Forms.MouseButtons.Left)
+            {
+                i++;
+                PointLatLng point = gMapControl1.FromLocalToLatLng(e.X, e.Y);//双击点的经纬度
+                GMapMarker marker = new GMapMarkerGoogleGreen(point);
+                marker.ToolTipMode = MarkerTooltipMode.OnMouseOver;//当鼠标经过marker层，即显示tip信息
+                marker.ToolTipText = string.Format("    {0},{1},{2}",i, point.Lat, point.Lng);//marker层即标记经纬度
+                //marker.Tag = MyMark.Markers.Count.ToString();
+                MyMark.Markers.Add(marker);
+                textBox1.AppendText(marker.ToolTipText + "\n\r" + "\n");  
+            }
+        }
+
+        private void trackBar1_Scroll(object sender, EventArgs e)//地图的缩放滚轴
+        {
+            this.trackBar1.Minimum = 300;//缩放的最大最小，这个可以修改
+            this.trackBar1.Maximum = 1800;
+            this.trackBar1.TickFrequency = 100;//每滚动一个相对应的比例
+            gMapControl1.Zoom = trackBar1.Value / 100;//真实图跟缩放滚轴比例为100，可以改动
+        }
+        private void button1_Click(object sender, EventArgs e)//最上面的查询按钮，输入经纬度定位到改位置
+        {
+            try
+            {
+                //gMapControl1.Refresh();
+                GMap.NET.GMaps.Instance.Mode = GMap.NET.AccessMode.ServerAndCache;//重点说下，这行是调用服务器和缓存，accessmode.后面可以后三种模式，服务器、缓存、服务器和缓存
+                double lat = double.Parse(textBox2.Text);//需要将键盘输入的字符格式转换为数字，用到parse，你可以网上看看其他转换方式，这里留个悬念
+                double lng = double.Parse(textBox3.Text);
+                gMapControl1.Position = new PointLatLng(lat, lng);//定义一下
+                this.Center = new GMapMarkerCross(this.gMapControl1.Position); //创建图标红十字 ，图片聚焦到改红十字
+                this.routes.Markers.Add(Center);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("请输入查询的地址: " + ex.Message, "错误提示");//若输入的不符合格式，就会报错，显示错误原因
+            }
+        }
+
+        private void Form1_Load(object sender, EventArgs e)//主窗口的基本设置，系统加载时的界面
+        {
+            for (int i = 1; i < 20; i++)  //端口的显示，下拉框
+            {
+                comboBox1.Items.Add("COM" + i.ToString());
+                comboBox3.Items.Add("COM" + i.ToString());
+            }
+            comboBox1.Text = "COM3";//串口号默认值
+            comboBox2.Text = "115200";//波特率默认值           
+            search_serial();                //搜寻可用串口号，绿色箭头可以点击即可搜索当前串口可用的端口
+            serialPort1.DataReceived += new SerialDataReceivedEventHandler(serialPort1_DataReceived);//添加事件处理程序
+            comboBox3.Text = "COM4";//串口号默认值
+            comboBox4.Text = "115200";//波特率默认值           
+            search_serial2();                //搜寻可用串口号
+            serialPort1.DataReceived += new SerialDataReceivedEventHandler(serialPort1_DataReceived);//添加事件处理程序
+            GMap.NET.GMaps.Instance.Mode = GMap.NET.AccessMode.ServerAndCache;//重点说下，这行是调用服务器和缓存，accessmode.后面可以后三种模式，服务器、缓存、服务器和缓存
+            //pictureBox1.Image = Image.FromFile(@"F:\c#\1gomap\地图上位机\9Daewoo大宇\Maserati\Resources\1212.png");//pictureBox1控件当前窗口显示衣服图片，记得加“@”，不然会报错
+            DsDevice[] device = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice);
+
+        }
+
+        private void serialPort1_DataReceived(object sender, SerialDataReceivedEventArgs e)//串口1数据接收，并在textbox4中显示
+        {
+                string str = serialPort1.ReadExisting();//字符串方式读
+                textBox4.AppendText(str);//添加内容textBox文本框中依次向后显示            
+        }
+        public void search_serial()   //搜寻可用串口并添加到Port选择框
+        {
+            comboBox1.Items.Clear();//点击绿色搜索按键，先清除comboBox1内容
+            string[] ports = SerialPort.GetPortNames();
+            Array.Sort(ports);
+            comboBox1.Items.AddRange(ports);
+            if (comboBox1.Items.Count == 0)
+            {
+                comboBox1.Items.Add("COM3");
+            }
+            comboBox1.SelectedIndex = comboBox1.Items.Count > 0 ? 0 : -1;
+        }
+        public void search_serial2()   //搜寻可用串口并添加到Port选择框，跟串口1相似
+        {
+            comboBox3.Items.Clear();
+            string[] ports = SerialPort.GetPortNames();
+            Array.Sort(ports);
+            comboBox3.Items.AddRange(ports);
+            if (comboBox3.Items.Count == 0)
+            {
+                comboBox3.Items.Add("COM4");
+            }
+            comboBox3.SelectedIndex = comboBox3.Items.Count > 0 ? 0 : -1;
+        }
+
+        private void button3_Click(object sender, EventArgs e)//打开串口按钮
+        {
+            try
+            {
+                serialPort1.PortName = comboBox1.Text;              //串口名称
+                serialPort1.BaudRate = int.Parse(comboBox2.Text);  //波特率
+                serialPort1.Open();                                //打开串口
+                button3.Enabled = false; //打开之后，失能
+                button5.Enabled = true;
+            }
+            catch
+            {
+                MessageBox.Show("串口打开错误", "提示");
+            }
+        }
+        private void button6_Click(object sender, EventArgs e)
+        {
+            search_serial();
+        }
+
+        private void button5_Click(object sender, EventArgs e)//关闭串口按钮
+        {
+            try
+            {
+                serialPort1.Close();
+                button3.Enabled = true;
+                button5.Enabled = false;
+            }
+            catch
+            {
+                MessageBox.Show("串口关闭错误", "提示");
+            }
+        }
+
+        private void button4_Click(object sender, EventArgs e)//清屏textbox4里的内容
+        {
+            textBox4.Text = "";//清屏
+        }
+
+        private void textBox1_TextChanged(object sender, EventArgs e)//textbox1里面若没有数字，则无法发送航点数据
+        {
+            if (textBox1.Text != "")
+                button2.Enabled = true;//只有当发送文本框内的有内容时才可以发送
+            else
+                button2.Enabled = false;
+        }
+
+        private void button2_Click(object sender, EventArgs e)//发送按钮，发送数据按钮，将航点数据通过串口发送
+        {
+            byte[] Data = new byte[1];
+            if (serialPort1.IsOpen)//判断串口是否打开，如果打开执行下一步操作
+            {
+                if (textBox1.Text != "")
+                {
+                    try
+                    {
+                        serialPort1.WriteLine(textBox1.Text);//写数据
+                    }
+                    catch
+                    {
+                        MessageBox.Show("串口数据写入错误", "错误");//出错提示
+                        serialPort1.Close();
+                        button3.Enabled = true;//打开串口按钮可用
+                        button5.Enabled = false;//关闭串口按钮不可用
+                    }
+                }
+            }
+        }
+
+        private void timer1_Tick(object sender, EventArgs e)//计时器调用的是系统的时间，DateTime.Now.ToString()，还可以显示毫秒等等，很好玩的
+        {
+            label9.Text = DateTime.Now.ToString() ; 
+
+        }
+ 
+        private void button7_Click(object sender, EventArgs e)//右侧监控的串口2
+        {
+            try
+            {
+                serialPort2.PortName = comboBox1.Text;              //串口名称
+                serialPort2.BaudRate = int.Parse(comboBox4.Text);  //波特率
+                serialPort2.Open();                                //打开串口
+                button7.Enabled = false; //打开之后，失能
+                button9.Enabled = true;
+            }
+            catch
+            {
+                MessageBox.Show("串口打开错误", "提示");
+            }
+        }
+
+        private void button9_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                serialPort2.Close();
+                button7.Enabled = true;
+                button9.Enabled = false;
+            }
+            catch
+            {
+                MessageBox.Show("串口关闭错误", "提示");
+            }
+        }
+        private void button8_Click(object sender, EventArgs e)
+        {
+            search_serial2();
+        }
+        private void pictureBox1_Click(object sender, EventArgs e)
+        {
+            
+        }
+
+//原理：  将Filter加入到graph中
+//以下是摄像头采集程序   
+        //filterGraph2：流过滤器,
+        //captureGraphBuilder2：视频设备处理,
+        //mediaControl：视频控制，如：开启或关闭等
+        //videoWidow：视频显示在窗体上的一些信息设置类,
+        //filterGraph2会被附加到captureGraphBuilder2对象.
+        public void CaptureVideo()
+        {
+            int hr = 0;
+            IBaseFilter sourceFilter = null;
+            try
+            {
+                GetInterfaces();    //获取DirectShow接口
+                hr = this.captureGraphBuilder.SetFiltergraph(this.graphBuilder);//将Filter加到capture
+                DsError.ThrowExceptionForHR(hr);        //出错会报警，用特定的失败 HRESULT 值引发异常。
+                sourceFilter = FindCaptureDevice();     //调用查找设备函数，视频捕获预览，可右键转到定义
+                hr = this.graphBuilder.AddFilter(sourceFilter, "Video Capture");    ////将Capture过滤器添加到我们的图表中。
+                DsError.ThrowExceptionForHR(hr);
+
+                hr = this.captureGraphBuilder.RenderStream(PinCategory.Preview, MediaType.Video, sourceFilter, null, null);//在视频捕获过滤器上渲染预览引脚
+                //使用this而不是this.graphBuilder.RenderFile
+                DsError.ThrowExceptionForHR(hr);
+
+                Marshal.ReleaseComObject(sourceFilter);//渲染视频流。释放它，加入到Filter
+
+                SetupVideoWindow(); //调用函数，设置视频窗口的样式和位置，可右键转到定义
+
+                rot = new DsROTEntry(this.graphBuilder);    //将我们的graph添加到rot-running object table
+                hr = this.mediaControl.Run();   //开始预览视频数据
+                DsError.ThrowExceptionForHR(hr);
+                this.currentState = PlayState.Running;  //当前的状态
+            }
+            catch   //try-catch，执行的代码，其中可能有异常。一旦发现异常，则立即跳到catch执行。否则不会执行catch里面的内容 
+            {
+                MessageBox.Show("An unrecoverable error has occurred.");
+            }
+        }
+        public IBaseFilter FindCaptureDevice()  //找摄像头设备
+        {
+            int hr = 0;
+#if USING_NET11
+      UCOMIEnumMoniker classEnum = null;
+      UCOMIMoniker[] moniker = new UCOMIMoniker[1];
+#else
+            IEnumMoniker classEnum = null;
+            IMoniker[] moniker = new IMoniker[1];
+#endif
+            object source = null;
+
+            ICreateDevEnum devEnum = (ICreateDevEnum)new CreateDevEnum();   //创建系统设备枚举器
+            hr = devEnum.CreateClassEnumerator(FilterCategory.VideoInputDevice, out classEnum, 0); //为视频采集设备创建一个枚举器
+            DsError.ThrowExceptionForHR(hr);
+            Marshal.ReleaseComObject(devEnum);//释放，不再需要设备枚举器
+
+            if (classEnum == null)  //没找到设备
+            {
+                throw new ApplicationException("No video capture device was detected.\r\n\r\n" +
+                                               "This sample requires a video capture device, such as a USB WebCam,\r\n" +
+                                               "to be installed and working properly.  The sample will now close.");
+            }
+
+//在设备列表中使用第一个视频捕获设备。注意，如果Next（）调用成功但没有标记，它将返回1（S_FALSE）（这不是失败）。 所以我们检查返回码是否为0（S_OK）。
+#if USING_NET11
+      int i;
+      if (classEnum.Next (moniker.Length, moniker, IntPtr.Zero) == 0)
+#else
+            if (classEnum.Next(moniker.Length, moniker, IntPtr.Zero) == 0)
+#endif
+            {
+                Guid iid = typeof(IBaseFilter).GUID;    //将Moniker绑定到过滤器对象
+                moniker[0].BindToObject(null, null, ref iid, out source);
+            }
+            else
+            {
+                throw new ApplicationException("Unable to access video capture device!");
+            }
+            Marshal.ReleaseComObject(moniker[0]);//释放COM对象
+            Marshal.ReleaseComObject(classEnum);
+            return (IBaseFilter)source;//如果投射失败，则抛出异常
+        }
+        /*
+            // Uncomment this version of FindCaptureDevice to use the DsDevice helper class
+            // (and comment the first version of course)
+            public IBaseFilter FindCaptureDevice()
+            {
+              System.Collections.ArrayList devices;
+              object source;
+
+              // Get all video input devices
+              devices = DsDevice.GetDevicesOfCat(FilterCategory.VideoInputDevice);
+
+              // Take the first device
+              DsDevice device = (DsDevice)devices[0];
+
+              // Bind Moniker to a filter object
+              Guid iid = typeof(IBaseFilter).GUID;
+              device.Mon.BindToObject(null, null, ref iid, out source);
+
+              // An exception is thrown if cast fail
+              return (IBaseFilter) source;
+            }
+        */
+        public void GetInterfaces()
+        {
+            int hr = 0;
+            this.graphBuilder = (IGraphBuilder)new FilterGraph();
+            this.captureGraphBuilder = (ICaptureGraphBuilder2)new CaptureGraphBuilder2();
+            this.mediaControl = (IMediaControl)this.graphBuilder;
+            this.videoWindow = (IVideoWindow)this.graphBuilder;
+            this.mediaEventEx = (IMediaEventEx)this.graphBuilder;
+            hr = this.mediaEventEx.SetNotifyWindow(pictureBox1.Handle, WM_GRAPHNOTIFY, IntPtr.Zero);
+            DsError.ThrowExceptionForHR(hr);
+        }
+        public void CloseInterfaces()   //关闭接口，停止预览数据
+        {
+            if (this.mediaControl != null)
+                this.mediaControl.StopWhenReady();
+            this.currentState = PlayState.Stopped;
+
+            if (this.mediaEventEx != null)  //停止接收事件
+                this.mediaEventEx.SetNotifyWindow(IntPtr.Zero, WM_GRAPHNOTIFY, IntPtr.Zero);
+            //放弃视频窗口的所有权（重要！）。不能调用put_Owner可能导致断言失败，视频渲染器，因为它仍然假定它有效父窗口。
+            if (this.videoWindow != null)
+            {
+                this.videoWindow.put_Visible(OABool.False);
+                this.videoWindow.put_Owner(IntPtr.Zero);
+            }
+            if (rot != null)    //从运行对象表中删除过滤器图
+            {
+                rot.Dispose();
+                rot = null;
+            }
+            //发布DirectShow界面
+            Marshal.ReleaseComObject(this.mediaControl); this.mediaControl = null;
+            Marshal.ReleaseComObject(this.mediaEventEx); this.mediaEventEx = null;
+            Marshal.ReleaseComObject(this.videoWindow); this.videoWindow = null;
+            Marshal.ReleaseComObject(this.graphBuilder); this.graphBuilder = null;
+            Marshal.ReleaseComObject(this.captureGraphBuilder); this.captureGraphBuilder = null;
+        }
+
+        public void SetupVideoWindow()
+        {
+            int hr = 0;
+//将视频窗口设置为主窗口的子窗口
+            hr = this.videoWindow.put_Owner(this.pictureBox1.Handle);
+            DsError.ThrowExceptionForHR(hr);
+            hr = this.videoWindow.put_WindowStyle(WindowStyle.Child | WindowStyle.ClipChildren);
+            DsError.ThrowExceptionForHR(hr);    //使用帮助函数将视频窗口定位在主应用程序窗口的客户端
+            ResizeVideoWindow();
+            hr = this.videoWindow.put_Visible(OABool.True); //使视频窗口可见，现在它已正确定位
+            DsError.ThrowExceptionForHR(hr);
+
+            Rectangle rc = this.pictureBox1.ClientRectangle;
+            hr = videoWindow.SetWindowPosition(0, 0, this.pictureBox1.Width, this.pictureBox1.Height);  //更改视频窗口大小
+            DsError.ThrowExceptionForHR(hr);
+
+        }
+
+        public void ResizeVideoWindow()
+        {
+            if (this.videoWindow != null)   //调整视频预览窗口大小以匹配所有者窗口大小
+            {
+                this.videoWindow.SetWindowPosition(0, 0, this.ClientSize.Width, this.ClientSize.Height);
+            }
+        }
+
+        public void ChangePreviewState(bool showVideo)
+        {
+            int hr = 0;
+
+            if (this.mediaControl == null)//如果媒体控制界面尚未就绪，请勿调用
+                return;
+            if (showVideo)//开始预览视频数据
+            {
+                if (this.currentState != PlayState.Running)
+                {
+                    hr = this.mediaControl.Run();
+                    this.currentState = PlayState.Running;
+                }
+            }
+            else//停止预览视频数据
+            {
+                hr = this.mediaControl.StopWhenReady();
+                this.currentState = PlayState.Stopped;
+            }
+        }
+
+        public void HandleGraphEvent()
+        {
+            int hr = 0;
+            EventCode evCode;
+            IntPtr evParam1, evParam2;
+
+            if (this.mediaEventEx == null)
+                return;
+
+            while (this.mediaEventEx.GetEvent(out evCode, out evParam1, out evParam2, 0) == 0)
+            {
+                hr = this.mediaEventEx.FreeEventParams(evCode, evParam1, evParam2);//自由事件参数，以防止与事件参数数据相关联的内存泄漏。 虽然此应用程序对收到的事件不感兴趣，但应用程序应始终处理它们。
+                DsError.ThrowExceptionForHR(hr);
+                //如果需要，在这里插入事件处理代码，比如双击放大画面等
+            }
+        }
+
+        protected override void WndProc(ref System.Windows.Forms.Message m)
+        {
+            switch (m.Msg)
+            {
+                case WM_GRAPHNOTIFY:
+                    {
+                        HandleGraphEvent();
+                        break;
+                    }
+            }
+
+            if (this.videoWindow != null)//将此消息传递到视频窗口以通知系统更改
+                this.videoWindow.NotifyOwnerMessage(m.HWnd, m.Msg, m.WParam, m.LParam);
+            base.WndProc(ref m);
+        }
+        private void Form1_Resize(object sender, System.EventArgs e)
+        {
+            if (this.WindowState == FormWindowState.Minimized)//当Form是标志性时停止图形
+                ChangePreviewState(false);
+            if (this.WindowState == FormWindowState.Normal)//窗口恢复正常状态时重新启动图
+                ChangePreviewState(true);
+            ResizeVideoWindow();
+        }
+
+
+    }
+}
